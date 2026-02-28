@@ -1,0 +1,266 @@
+from datetime import datetime, timezone
+
+from flask import Blueprint, jsonify, request
+
+from ..extensions import db
+from ..middleware.auth_required import admin_required
+from ..models.activation_key import ActivationKey
+from ..models.device import Device
+from ..models.product_database import ProductDatabase
+from ..models.user import User
+from ..utils.key_generator import generate_activation_key
+
+admin_bp = Blueprint('admin', __name__)
+
+
+# --- Stats ---
+
+@admin_bp.route('/stats', methods=['GET'])
+@admin_required
+def stats(user):
+    now = datetime.now(timezone.utc)
+
+    total_users = User.query.count()
+    active_trials = Device.query.filter(Device.trial_expires_at > now).distinct(Device.user_id).count()
+    active_keys = ActivationKey.query.filter(
+        ActivationKey.status == 'activated',
+        ActivationKey.expires_at > now,
+    ).count()
+    expired_users = total_users - active_trials - active_keys
+    total_keys = ActivationKey.query.count()
+    available_keys = ActivationKey.query.filter_by(status='available').count()
+    sold_keys = ActivationKey.query.filter_by(status='sold').count()
+
+    revenue = db.session.query(
+        db.func.coalesce(db.func.sum(ActivationKey.sold_price), 0)
+    ).filter(ActivationKey.sold_price.isnot(None)).scalar()
+
+    recent_users = User.query.order_by(User.created_at.desc()).limit(10).all()
+
+    return jsonify({
+        'total_users': total_users,
+        'active_trials': active_trials,
+        'active_keys': active_keys,
+        'expired_users': max(0, expired_users),
+        'total_keys': total_keys,
+        'available_keys': available_keys,
+        'sold_keys': sold_keys,
+        'revenue': float(revenue),
+        'recent_users': [u.to_dict() for u in recent_users],
+    }), 200
+
+
+# --- Users ---
+
+@admin_bp.route('/users', methods=['GET'])
+@admin_required
+def list_users(user):
+    search = request.args.get('search', '').strip()
+    status_filter = request.args.get('status', '').strip()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    per_page = min(per_page, 100)
+
+    query = User.query
+
+    if search:
+        query = query.filter(User.email.ilike(f'%{search}%'))
+
+    query = query.order_by(User.created_at.desc())
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+
+    now = datetime.now(timezone.utc)
+    users_data = []
+    for u in pagination.items:
+        u_dict = u.to_dict()
+
+        # Determine activation status
+        active_key = ActivationKey.query.filter(
+            ActivationKey.user_id == u.id,
+            ActivationKey.status == 'activated',
+            ActivationKey.expires_at > now,
+        ).first()
+
+        if active_key:
+            u_dict['activation_status'] = 'active'
+            u_dict['activation_expires'] = active_key.expires_at.isoformat()
+        else:
+            trial = Device.query.filter(
+                Device.user_id == u.id,
+                Device.trial_expires_at > now,
+            ).first()
+            if trial:
+                u_dict['activation_status'] = 'trial'
+                u_dict['activation_expires'] = trial.trial_expires_at.isoformat()
+            else:
+                u_dict['activation_status'] = 'expired'
+                u_dict['activation_expires'] = None
+
+        users_data.append(u_dict)
+
+    # Apply status filter after computing statuses
+    if status_filter:
+        users_data = [u for u in users_data if u['activation_status'] == status_filter]
+
+    return jsonify({
+        'users': users_data,
+        'total': pagination.total,
+        'page': pagination.page,
+        'pages': pagination.pages,
+    }), 200
+
+
+@admin_bp.route('/users/<int:user_id>', methods=['GET'])
+@admin_required
+def get_user(admin, user_id):
+    target = User.query.get(user_id)
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    devices = Device.query.filter_by(user_id=user_id).all()
+    keys = ActivationKey.query.filter_by(user_id=user_id).all()
+    databases = ProductDatabase.query.filter_by(user_id=user_id).all()
+
+    return jsonify({
+        'user': target.to_dict(),
+        'devices': [d.to_dict() for d in devices],
+        'activation_keys': [k.to_dict() for k in keys],
+        'databases': [db.to_dict() for db in databases],
+    }), 200
+
+
+@admin_bp.route('/users/<int:user_id>', methods=['PUT'])
+@admin_required
+def update_user(admin, user_id):
+    target = User.query.get(user_id)
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    if 'is_active' in data:
+        target.is_active = bool(data['is_active'])
+    if 'is_admin' in data:
+        target.is_admin = bool(data['is_admin'])
+
+    db.session.commit()
+    return jsonify(target.to_dict()), 200
+
+
+# --- Activation Keys ---
+
+@admin_bp.route('/keys', methods=['GET'])
+@admin_required
+def list_keys(user):
+    search = request.args.get('search', '').strip()
+    status_filter = request.args.get('status', '').strip()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    per_page = min(per_page, 100)
+
+    query = ActivationKey.query
+
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+    if search:
+        query = query.filter(
+            db.or_(
+                ActivationKey.key_code.ilike(f'%{search}%'),
+                ActivationKey.activated_email.ilike(f'%{search}%'),
+                ActivationKey.sold_to_name.ilike(f'%{search}%'),
+                ActivationKey.sold_to_email.ilike(f'%{search}%'),
+            )
+        )
+
+    query = query.order_by(ActivationKey.created_at.desc())
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+
+    return jsonify({
+        'keys': [k.to_dict() for k in pagination.items],
+        'total': pagination.total,
+        'page': pagination.page,
+        'pages': pagination.pages,
+    }), 200
+
+
+@admin_bp.route('/keys/generate', methods=['POST'])
+@admin_required
+def generate_keys(admin_user):
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    count = data.get('count', 1)
+    count = min(max(1, count), 100)  # 1-100 keys at a time
+    duration_days = data.get('duration_days', 365)
+    sold_to_name = data.get('sold_to_name', '').strip() or None
+    sold_to_email = data.get('sold_to_email', '').strip() or None
+    sold_price = data.get('sold_price')
+    notes = data.get('notes', '').strip() or None
+
+    now = datetime.now(timezone.utc)
+    initial_status = 'available'
+    sold_at = None
+
+    # If sold_to info provided, mark as sold immediately
+    if sold_to_name or sold_to_email:
+        initial_status = 'sold'
+        sold_at = now
+
+    keys = []
+    for _ in range(count):
+        key = ActivationKey(
+            key_code=generate_activation_key(),
+            duration_days=duration_days,
+            status=initial_status,
+            sold_to_name=sold_to_name,
+            sold_to_email=sold_to_email,
+            sold_at=sold_at,
+            sold_price=sold_price,
+            notes=notes,
+            created_by=admin_user.id,
+        )
+        db.session.add(key)
+        keys.append(key)
+
+    db.session.commit()
+    return jsonify({
+        'message': f'{len(keys)} key(s) generated',
+        'keys': [k.to_dict() for k in keys],
+    }), 201
+
+
+@admin_bp.route('/keys/<int:key_id>', methods=['PUT'])
+@admin_required
+def update_key(user, key_id):
+    key = ActivationKey.query.get(key_id)
+    if not key:
+        return jsonify({'error': 'Key not found'}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    now = datetime.now(timezone.utc)
+
+    if 'status' in data:
+        new_status = data['status']
+        if new_status == 'revoked':
+            key.status = 'revoked'
+        elif new_status == 'sold' and key.status == 'available':
+            key.status = 'sold'
+            key.sold_at = now
+
+    if 'sold_to_name' in data:
+        key.sold_to_name = data['sold_to_name'].strip() or None
+    if 'sold_to_email' in data:
+        key.sold_to_email = data['sold_to_email'].strip() or None
+    if 'sold_price' in data:
+        key.sold_price = data['sold_price']
+    if 'notes' in data:
+        key.notes = data['notes'].strip() or None
+
+    db.session.commit()
+    return jsonify(key.to_dict()), 200
