@@ -21,6 +21,9 @@ auth_bp = Blueprint('auth', __name__)
 
 def _get_activation_status(user):
     """Get activation status for a user (account-based, not device-based)."""
+    if user.is_admin:
+        return {'status': 'active', 'days_remaining': 999}
+
     now = datetime.now(timezone.utc)
 
     # Check for active activation key
