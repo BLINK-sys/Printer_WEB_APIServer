@@ -14,6 +14,13 @@ activation_bp = Blueprint('activation', __name__)
 @jwt_required_custom
 def status(user):
     """Check activation status for the current user's account."""
+    # Admins always have access
+    if user.is_admin:
+        return jsonify({
+            'status': 'active',
+            'days_remaining': 999,
+        }), 200
+
     now = datetime.now(timezone.utc)
 
     # Check for active activation key (account-based)
