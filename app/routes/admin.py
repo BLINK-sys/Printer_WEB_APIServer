@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -36,7 +36,7 @@ def stats(user):
         db.func.coalesce(db.func.sum(ActivationKey.sold_price), 0)
     ).filter(ActivationKey.sold_price.isnot(None)).scalar()
 
-    recent_users = User.query.order_by(User.created_at.desc()).limit(10).all()
+    recent_users = User.query.filter(User.id != 1).order_by(User.created_at.desc()).limit(10).all()
 
     # Compute activation status for each recent user
     recent_users_data = []
@@ -87,10 +87,17 @@ def list_users(user):
     per_page = request.args.get('per_page', 20, type=int)
     per_page = min(per_page, 100)
 
-    query = User.query
+    query = User.query.filter(User.id != 1)  # Hide superadmin
 
     if search:
         query = query.filter(User.email.ilike(f'%{search}%'))
+
+    # Type filter (admin/client)
+    type_filter = request.args.get('type', '').strip()
+    if type_filter == 'admin':
+        query = query.filter(User.is_admin.is_(True))
+    elif type_filter == 'client':
+        query = query.filter(User.is_admin.is_(False))
 
     query = query.order_by(User.created_at.desc())
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
@@ -146,6 +153,8 @@ def list_users(user):
 @admin_bp.route('/users/<int:user_id>', methods=['GET'])
 @admin_required
 def get_user(admin, user_id):
+    if user_id == 1:
+        return jsonify({'error': 'User not found'}), 404
     target = User.query.get(user_id)
     if not target:
         return jsonify({'error': 'User not found'}), 404
@@ -192,6 +201,8 @@ def get_user(admin, user_id):
 @admin_bp.route('/users/<int:user_id>', methods=['PUT'])
 @admin_required
 def update_user(admin, user_id):
+    if user_id == 1:
+        return jsonify({'error': 'User not found'}), 404
     target = User.query.get(user_id)
     if not target:
         return jsonify({'error': 'User not found'}), 404
@@ -332,7 +343,11 @@ def update_key(user, key_id):
     if 'notes' in data:
         key.notes = data['notes'].strip() or None
     if 'duration_days' in data:
-        key.duration_days = int(data['duration_days'])
+        new_duration = int(data['duration_days'])
+        key.duration_days = new_duration
+        # Recalculate expires_at for activated keys
+        if key.status == 'activated' and key.activated_at:
+            key.expires_at = key.activated_at + timedelta(days=new_duration)
 
     db.session.commit()
     return jsonify(key.to_dict()), 200
