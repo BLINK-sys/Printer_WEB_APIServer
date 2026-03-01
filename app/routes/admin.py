@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
+from werkzeug.security import generate_password_hash
+
 from ..extensions import db
 from ..middleware.auth_required import admin_required
 from ..models.activation_key import ActivationKey
@@ -215,9 +217,60 @@ def update_user(admin, user_id):
         target.is_active = bool(data['is_active'])
     if 'is_admin' in data:
         target.is_admin = bool(data['is_admin'])
+    if 'password' in data:
+        new_password = data['password'].strip()
+        if len(new_password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+        target.password_hash = generate_password_hash(new_password)
 
     db.session.commit()
     return jsonify(target.to_dict()), 200
+
+
+@admin_bp.route('/users/<int:user_id>/extend', methods=['POST'])
+@admin_required
+def extend_license(admin, user_id):
+    """Extend user's active key by N days. If expired, restart from now."""
+    if user_id == 1:
+        return jsonify({'error': 'User not found'}), 404
+    target = User.query.get(user_id)
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    days = data.get('days', 0)
+    if not days or days < 1:
+        return jsonify({'error': 'days must be a positive number'}), 400
+
+    now = datetime.utcnow()
+
+    # Find activated key for this user
+    key = ActivationKey.query.filter(
+        ActivationKey.user_id == user_id,
+        ActivationKey.status == 'activated',
+    ).first()
+
+    if not key:
+        return jsonify({'error': 'User has no activated key'}), 404
+
+    if key.expires_at and key.expires_at > now:
+        # Key still active — add days to current expires_at
+        key.expires_at = key.expires_at + timedelta(days=days)
+        key.duration_days = key.duration_days + days
+    else:
+        # Key expired — restart from now
+        key.activated_at = now
+        key.expires_at = now + timedelta(days=days)
+        key.duration_days = days
+
+    db.session.commit()
+    return jsonify({
+        'message': f'License extended by {days} days',
+        'key': key.to_dict(),
+    }), 200
 
 
 # --- Activation Keys ---
