@@ -152,15 +152,14 @@ def login():
 
     # Register device if new (but don't create a trial — trial is only on registration)
     if device_id and platform:
-        existing_device = Device.query.filter_by(user_id=user.id, device_id=device_id, platform=platform).first()
+        existing_device = Device.query.filter_by(device_id=device_id, platform=platform).first()
         if not existing_device:
-            # Just track the device, no new trial
             device = Device(
                 user_id=user.id,
                 device_id=device_id,
                 platform=platform,
                 trial_started_at=datetime.utcnow(),
-                trial_expires_at=datetime.utcnow(),  # Already expired — no trial on login
+                trial_expires_at=datetime.utcnow(),
             )
             db.session.add(device)
             db.session.commit()
