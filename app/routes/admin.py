@@ -26,7 +26,8 @@ def stats(user):
         ActivationKey.status == 'activated',
         ActivationKey.expires_at > now,
     ).count()
-    expired_users = total_users - active_trials - active_keys
+    admin_count = User.query.filter_by(is_admin=True).count()
+    expired_users = total_users - active_trials - active_keys - admin_count
     total_keys = ActivationKey.query.count()
     available_keys = ActivationKey.query.filter_by(status='available').count()
     sold_keys = ActivationKey.query.filter_by(status='sold').count()
@@ -37,6 +38,31 @@ def stats(user):
 
     recent_users = User.query.order_by(User.created_at.desc()).limit(10).all()
 
+    # Compute activation status for each recent user
+    recent_users_data = []
+    for u in recent_users:
+        u_dict = u.to_dict()
+        if u.is_admin:
+            u_dict['activation_status'] = 'active'
+        else:
+            active_key = ActivationKey.query.filter(
+                ActivationKey.user_id == u.id,
+                ActivationKey.status == 'activated',
+                ActivationKey.expires_at > now,
+            ).first()
+            if active_key:
+                u_dict['activation_status'] = 'active'
+            else:
+                trial = Device.query.filter(
+                    Device.user_id == u.id,
+                    Device.trial_expires_at > now,
+                ).first()
+                if trial:
+                    u_dict['activation_status'] = 'trial'
+                else:
+                    u_dict['activation_status'] = 'expired'
+        recent_users_data.append(u_dict)
+
     return jsonify({
         'total_users': total_users,
         'active_trials': active_trials,
@@ -46,7 +72,7 @@ def stats(user):
         'available_keys': available_keys,
         'sold_keys': sold_keys,
         'revenue': float(revenue),
-        'recent_users': [u.to_dict() for u in recent_users],
+        'recent_users': recent_users_data,
     }), 200
 
 
@@ -75,32 +101,39 @@ def list_users(user):
         u_dict = u.to_dict()
 
         # Determine activation status
-        active_key = ActivationKey.query.filter(
-            ActivationKey.user_id == u.id,
-            ActivationKey.status == 'activated',
-            ActivationKey.expires_at > now,
-        ).first()
-
-        if active_key:
+        if u.is_admin:
             u_dict['activation_status'] = 'active'
-            u_dict['activation_expires'] = active_key.expires_at.isoformat()
+            u_dict['activation_expires'] = None
         else:
-            trial = Device.query.filter(
-                Device.user_id == u.id,
-                Device.trial_expires_at > now,
+            active_key = ActivationKey.query.filter(
+                ActivationKey.user_id == u.id,
+                ActivationKey.status == 'activated',
+                ActivationKey.expires_at > now,
             ).first()
-            if trial:
-                u_dict['activation_status'] = 'trial'
-                u_dict['activation_expires'] = trial.trial_expires_at.isoformat()
+
+            if active_key:
+                u_dict['activation_status'] = 'active'
+                u_dict['activation_expires'] = active_key.expires_at.isoformat()
             else:
-                u_dict['activation_status'] = 'expired'
-                u_dict['activation_expires'] = None
+                trial = Device.query.filter(
+                    Device.user_id == u.id,
+                    Device.trial_expires_at > now,
+                ).first()
+                if trial:
+                    u_dict['activation_status'] = 'trial'
+                    u_dict['activation_expires'] = trial.trial_expires_at.isoformat()
+                else:
+                    u_dict['activation_status'] = 'expired'
+                    u_dict['activation_expires'] = None
 
         users_data.append(u_dict)
 
     # Apply status filter after computing statuses
     if status_filter:
-        users_data = [u for u in users_data if u['activation_status'] == status_filter]
+        if status_filter == 'admin':
+            users_data = [u for u in users_data if u.get('is_admin')]
+        else:
+            users_data = [u for u in users_data if u['activation_status'] == status_filter]
 
     return jsonify({
         'users': users_data,
@@ -117,15 +150,42 @@ def get_user(admin, user_id):
     if not target:
         return jsonify({'error': 'User not found'}), 404
 
+    now = datetime.utcnow()
     devices = Device.query.filter_by(user_id=user_id).all()
     keys = ActivationKey.query.filter_by(user_id=user_id).all()
     databases = ProductDatabase.query.filter_by(user_id=user_id).all()
 
+    # Compute activation status
+    user_dict = target.to_dict()
+    if target.is_admin:
+        user_dict['activation_status'] = 'active'
+        user_dict['activation_expires'] = None
+    else:
+        active_key = ActivationKey.query.filter(
+            ActivationKey.user_id == target.id,
+            ActivationKey.status == 'activated',
+            ActivationKey.expires_at > now,
+        ).first()
+        if active_key:
+            user_dict['activation_status'] = 'active'
+            user_dict['activation_expires'] = active_key.expires_at.isoformat()
+        else:
+            trial = Device.query.filter(
+                Device.user_id == target.id,
+                Device.trial_expires_at > now,
+            ).first()
+            if trial:
+                user_dict['activation_status'] = 'trial'
+                user_dict['activation_expires'] = trial.trial_expires_at.isoformat()
+            else:
+                user_dict['activation_status'] = 'expired'
+                user_dict['activation_expires'] = None
+
     return jsonify({
-        'user': target.to_dict(),
+        'user': user_dict,
         'devices': [d.to_dict() for d in devices],
         'activation_keys': [k.to_dict() for k in keys],
-        'databases': [db.to_dict() for db in databases],
+        'databases': [db_.to_dict() for db_ in databases],
     }), 200
 
 
@@ -249,6 +309,11 @@ def update_key(user, key_id):
         new_status = data['status']
         if new_status == 'revoked':
             key.status = 'revoked'
+            # Clear user binding so the user loses activation
+            key.user_id = None
+            key.activated_email = None
+            key.activated_at = None
+            key.expires_at = None
         elif new_status == 'sold' and key.status == 'available':
             key.status = 'sold'
             key.sold_at = now
