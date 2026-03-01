@@ -24,7 +24,7 @@ def _get_activation_status(user):
     if user.is_admin:
         return {'status': 'active', 'days_remaining': 999}
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
 
     # Check for active activation key
     active_key = ActivationKey.query.filter(
@@ -104,7 +104,7 @@ def register():
     db.session.flush()
 
     # Create device with trial
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     from flask import current_app
     trial_days = current_app.config.get('TRIAL_DURATION_DAYS', 3)
 
@@ -159,8 +159,8 @@ def login():
                 user_id=user.id,
                 device_id=device_id,
                 platform=platform,
-                trial_started_at=datetime.now(timezone.utc),
-                trial_expires_at=datetime.now(timezone.utc),  # Already expired — no trial on login
+                trial_started_at=datetime.utcnow(),
+                trial_expires_at=datetime.utcnow(),  # Already expired — no trial on login
             )
             db.session.add(device)
             db.session.commit()

@@ -21,7 +21,7 @@ def status(user):
             'days_remaining': 999,
         }), 200
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
 
     # Check for active activation key (account-based)
     active_key = ActivationKey.query.filter(
@@ -86,7 +86,7 @@ def activate(user):
         return jsonify({'error': 'This key cannot be activated'}), 400
 
     # Check if user already has an active key
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     existing_active = ActivationKey.query.filter(
         ActivationKey.user_id == user.id,
         ActivationKey.status == 'activated',

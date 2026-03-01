@@ -18,7 +18,7 @@ admin_bp = Blueprint('admin', __name__)
 @admin_bp.route('/stats', methods=['GET'])
 @admin_required
 def stats(user):
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
 
     total_users = User.query.count()
     active_trials = Device.query.filter(Device.trial_expires_at > now).distinct(Device.user_id).count()
@@ -69,7 +69,7 @@ def list_users(user):
     query = query.order_by(User.created_at.desc())
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     users_data = []
     for u in pagination.items:
         u_dict = u.to_dict()
@@ -200,7 +200,7 @@ def generate_keys(admin_user):
     sold_price = data.get('sold_price')
     notes = data.get('notes', '').strip() or None
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     initial_status = 'available'
     sold_at = None
 
@@ -243,7 +243,7 @@ def update_key(user, key_id):
     if not data:
         return jsonify({'error': 'Request body required'}), 400
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
 
     if 'status' in data:
         new_status = data['status']
