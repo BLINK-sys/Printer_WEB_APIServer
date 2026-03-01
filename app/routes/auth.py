@@ -118,8 +118,8 @@ def register():
     db.session.add(device)
     db.session.commit()
 
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token = create_access_token(identity=str(user.id))
+    refresh_token = create_refresh_token(identity=str(user.id))
 
     return jsonify({
         'user': user.to_dict(),
@@ -164,8 +164,8 @@ def login():
             db.session.add(device)
             db.session.commit()
 
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token = create_access_token(identity=str(user.id))
+    refresh_token = create_refresh_token(identity=str(user.id))
 
     return jsonify({
         'user': user.to_dict(),
@@ -188,9 +188,9 @@ def me(user):
 @jwt_required(refresh=True)
 def refresh():
     user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    user = User.query.get(int(user_id))
     if not user or not user.is_active:
         return jsonify({'error': 'Account disabled'}), 403
 
-    access_token = create_access_token(identity=user_id)
+    access_token = create_access_token(identity=str(user_id))
     return jsonify({'access_token': access_token}), 200
