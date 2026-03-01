@@ -308,8 +308,13 @@ def update_key(user, key_id):
     if 'status' in data:
         new_status = data['status']
         if new_status == 'revoked':
+            # Expire all trials for the user so they become fully expired
+            if key.user_id:
+                Device.query.filter(
+                    Device.user_id == key.user_id,
+                    Device.trial_expires_at > now,
+                ).update({Device.trial_expires_at: now})
             key.status = 'revoked'
-            # Clear user binding so the user loses activation
             key.user_id = None
             key.activated_email = None
             key.activated_at = None
@@ -326,6 +331,20 @@ def update_key(user, key_id):
         key.sold_price = data['sold_price']
     if 'notes' in data:
         key.notes = data['notes'].strip() or None
+    if 'duration_days' in data:
+        key.duration_days = int(data['duration_days'])
 
     db.session.commit()
     return jsonify(key.to_dict()), 200
+
+
+@admin_bp.route('/keys/<int:key_id>', methods=['DELETE'])
+@admin_required
+def delete_key(user, key_id):
+    key = ActivationKey.query.get(key_id)
+    if not key:
+        return jsonify({'error': 'Key not found'}), 404
+
+    db.session.delete(key)
+    db.session.commit()
+    return jsonify({'message': 'Key deleted'}), 200
