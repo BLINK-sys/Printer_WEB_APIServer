@@ -288,10 +288,15 @@ def assign_key(admin, user_id):
         return jsonify({'error': 'Request body required'}), 400
 
     key_id = data.get('key_id')
-    if not key_id:
-        return jsonify({'error': 'key_id is required'}), 400
+    key_code = data.get('key_code')
 
-    key = ActivationKey.query.get(key_id)
+    if key_code:
+        key = ActivationKey.query.filter_by(key_code=key_code.strip().upper()).first()
+    elif key_id:
+        key = ActivationKey.query.get(key_id)
+    else:
+        return jsonify({'error': 'key_id or key_code is required'}), 400
+
     if not key:
         return jsonify({'error': 'Key not found'}), 404
 
