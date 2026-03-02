@@ -273,6 +273,45 @@ def extend_license(admin, user_id):
     }), 200
 
 
+@admin_bp.route('/users/<int:user_id>/assign-key', methods=['POST'])
+@admin_required
+def assign_key(admin, user_id):
+    """Admin assigns an available/sold key to a specific user."""
+    if user_id == 1:
+        return jsonify({'error': 'User not found'}), 404
+    target = User.query.get(user_id)
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+
+    key_id = data.get('key_id')
+    if not key_id:
+        return jsonify({'error': 'key_id is required'}), 400
+
+    key = ActivationKey.query.get(key_id)
+    if not key:
+        return jsonify({'error': 'Key not found'}), 404
+
+    if key.status not in ('available', 'sold'):
+        return jsonify({'error': 'Ключ уже использован или отозван'}), 400
+
+    now = datetime.utcnow()
+    key.user_id = target.id
+    key.activated_email = target.email
+    key.activated_at = now
+    key.expires_at = now + timedelta(days=key.duration_days)
+    key.status = 'activated'
+
+    db.session.commit()
+    return jsonify({
+        'message': 'Ключ успешно назначен',
+        'key': key.to_dict(),
+    }), 200
+
+
 # --- Activation Keys ---
 
 @admin_bp.route('/keys', methods=['GET'])
